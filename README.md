@@ -21,8 +21,6 @@ FP_DCC606_Tema_11_RR_2026/
 │   │
 │   ├── engines/                   # Módulo 2: Computational Engines 
 │   │   ├── __init__.py
-│   │   ├── backtracking.py        # Sequential Backtracking (Baseline) 
-│   │   ├── dynamic_programming.py # Dynamic Programming implementation 
 │   │   └── parallel_dfs.py        # Custom Parallel DFS implementation 
 │   │
 │   ├── concurrency/               # Módulo 3: Coordination Layers 
