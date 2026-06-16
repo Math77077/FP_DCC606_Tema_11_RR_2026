@@ -1,9 +1,10 @@
 import multiprocessing
 import queue
-from typing import List, Set
+from typing import List, Set, Tuple
 from src.core.graph import Multigraph
 from src.core.models import TransitEdge
 from src.concurrency.thread_safe_pool import ThreadSafeSolutionPool
+from src.concurrency.work_stealing import WorkStealingManager
 
 def find_alternative_paths(
     graph: Multigraph,
@@ -65,48 +66,72 @@ def find_alternative_paths(
     return all_valid_paths
 
 def parallel_worker_loop(
+    worker_id: int,
+    num_workers: int,
     graph: Multigraph,
     start: str,
     end: str,
     max_time: float,
     max_transfers: int,
-    task_queue,     # This is the shared multiprocessing.Queue()
+    worker_queues,     # This is the dictionary containing all worker queues
     solution_pool: ThreadSafeSolutionPool
 ) -> None:
+    # frame template: (current_node, accumulated_time, accumulated_transfers, path_list)
+    local_stack: List[Tuple[str, float, int, List[TransitEdge]]] = []
+
+    try: # grap initial task to start the worker's engine
+        boot_task = worker_queues[worker_id].get(timeout=0.1)
+        current_node, path, curr_time, curr_transfers = boot_task
+        local_stack.append((current_node, curr_time, curr_transfers, path))
+    except queue.Empty: # in case of empty queue, we exit early
+        pass
+    
     while True:
-        try:
-            # We attempt to grap from the shared queue. Also,the timeout is for how long we are going to wait to grap a task, in case there isnt then throw a error (queue.Empty). We wait 0.1 seconds, no task, so error.
-            task = task_queue.get(timeout=0.1) 
+        if not local_stack:
+            stolen_frame = WorkStealingManager.request_work(worker_id, num_workers, worker_queues)
 
-            # This works like a current_node = task[0], current_path = task[1], and so on
-            current_node, current_path, visited_nodes, accumulated_time, accumulated_transfers = task
-        except queue.Empty: # If the queue is empty, the worker can safely exit the loop
-            break
+            if stolen_frame:
+                local_stack.append(stolen_frame)
+            else:
+                break
 
-        if accumulated_time > max_time:
-            continue
-        if accumulated_transfers > max_transfers:
-            continue
+        current_node, curr_time, curr_transfers, path = local_stack.pop()
 
         if current_node == end:
-            solution_pool.add_solution(current_path)
+            solution_pool.add_solution(path)
             continue
 
-        for edge in graph.get_neighbors(current_node):
-            if edge.v not in visited_nodes:
-                # This are copies of path and visited set, so separate processes dont mix into each others memory tracking
-                next_path = current_path + [edge] # this is a isolated 'current_path', it doesnt touch the actual 'current_path' because the other threads are also using it. So modifying it directly means modifying the process for every thread
-                next_visited = visited_nodes | {edge.v} # the same applies for this, but instead of creating a brand-new list using + [edge.v], we use '|' that works just like a Set Union, combines the current visited_nodes with a new set to create a brand-new combined set without touching the original visited_nodes
+        # checking if our own queue to verify if another worker pushed their ID inside it
+        if not worker_queues[worker_id].empty():
+            try:
+                thief_id = worker_queues[worker_id].get_nowait()
+                stolen_frame = WorkStealingManager.split_stack(local_stack)
 
-                next_time = accumulated_time + edge.time 
-                next_transfers = accumulated_transfers + edge.transfer
+                if stolen_frame:
+                    worker_queues[thief_id].put_nowait(stolen_frame)
+                else:
+                    pass
+            except (queue.Empty, queue.Full):
+                pass
 
-                # Get every complete state into a tuple pack
-                new_task = (edge.v, next_path, next_visited, next_time, next_transfers)
+        for edge in graph.get_neighbors(current_node): 
+            if edge.v == start or any(p.v == edge.v for p in path): # cycle detection, avoid redundancy
+                continue
 
-                task_queue.put(new_task) # will put this sub-task back on the queue board so any idle worker can grab it
-                
-                # The idea of this parallel_worker_loop is to discover a part of the path, not the whole path, but a part of it. Then, as soon it discovers this part, it just send to the TODO board tasks. When the loop reiterates again, it'll get this exactly task it just has sended to the TODO board tasks. But of course, we have to imagine this is done across multiple workers and not necessarily it'll continue the previous job
+            # accumulate the constraints
+            next_time = curr_time + edge.time
+            next_transfers = curr_transfers + edge.transfer
+
+            # prune if the constrainst are not respected
+            if next_time > max_time:
+                continue
+
+            if next_transfers > max_transfers:
+                continue
+            
+            # update path history and push to our local backpack (local_stack)
+            next_path = path + [edge]
+            local_stack.append((edge.v, next_time, next_transfers, next_path))
 
 
 def find_paths_parallel(
@@ -118,24 +143,34 @@ def find_paths_parallel(
     num_workers: int    # How many threads/processes we will have
 ) -> List[List[TransitEdge]]:
     solution_pool = ThreadSafeSolutionPool() # This is the alternative 'all_valid_paths', but thread-safe
-    task_queue = multiprocessing.Queue()     # The place where we keep the tasks. To later be stealed by other workers, so this is our initial board of TODO tasks
-    task_queue.put((start, [], {start}, 0.0, 0)) # Our equivalente of dfs_worker(start, [], initial_visited, 0.0, 0) to start the system
+    
+    # isolated communication for each worker process
+    worker_queues = {i: multiprocessing.Queue() for i in range(num_workers)}
 
-    # This list will hold our active workers
+    # task frame format: (current_node, path_list, accumulated_time, accumulated_transfers)
+    worker_queues[0].put((start, [], 0.0, 0))
+
     processes = []
 
-    # The actual part of the code where we create the multiple workers
-    for _ in range(num_workers):
+    for worker_id in range(num_workers):
         p = multiprocessing.Process(
             target=parallel_worker_loop,
-            args=(graph, start, end, max_time, max_transfers, task_queue, solution_pool)
+            args=(
+                worker_id,
+                num_workers,
+                graph,
+                start,
+                end,
+                max_time,
+                max_transfers,
+                worker_queues,
+                solution_pool
+            )
         )
         processes.append(p)
         p.start()
 
     for p in processes:
-        p.join()  # Waits all children workers finished before finishing at the parent level process
+        p.join()
 
     return solution_pool.get_all_solutions()
-    
-
