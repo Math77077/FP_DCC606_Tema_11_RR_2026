@@ -1,6 +1,7 @@
 import multiprocessing
 import queue
 from typing import List, Set, Tuple
+from multiprocessing.sharedctypes import Synchronized
 from src.core.graph import Multigraph
 from src.core.models import TransitEdge
 from src.concurrency.thread_safe_pool import ThreadSafeSolutionPool
@@ -74,7 +75,8 @@ def parallel_worker_loop(
     max_time: float,
     max_transfers: int,
     worker_queues,     # This is the dictionary containing all worker queues
-    solution_pool: ThreadSafeSolutionPool
+    solution_pool: ThreadSafeSolutionPool,
+    active_workers: Synchronized
 ) -> None:
     # frame template: (current_node, accumulated_time, accumulated_transfers, path_list)
     local_stack: List[Tuple[str, float, int, List[TransitEdge]]] = []
@@ -88,12 +90,22 @@ def parallel_worker_loop(
     
     while True:
         if not local_stack:
+            with active_workers.get_lock():
+                active_workers.value -= 1
+
             stolen_frame = WorkStealingManager.request_work(worker_id, num_workers, worker_queues)
 
             if stolen_frame:
+                with active_workers.get_lock():
+                    active_workers.value += 1
                 local_stack.append(stolen_frame)
             else:
-                break
+                if active_workers.value == 0:
+                    break
+                else:
+                    with active_workers.get_lock():
+                        active_workers.value += 1
+                    continue
 
         current_node, curr_time, curr_transfers, path = local_stack.pop()
 
@@ -147,6 +159,9 @@ def find_paths_parallel(
     # isolated communication for each worker process
     worker_queues = {i: multiprocessing.Queue() for i in range(num_workers)}
 
+    # tracker of active workers, at the start all of them are considered active
+    active_workers = multiprocessing.Value('i', num_workers)
+
     # task frame format: (current_node, path_list, accumulated_time, accumulated_transfers)
     worker_queues[0].put((start, [], 0.0, 0))
 
@@ -164,7 +179,8 @@ def find_paths_parallel(
                 max_time,
                 max_transfers,
                 worker_queues,
-                solution_pool
+                solution_pool,
+                active_workers
             )
         )
         processes.append(p)
