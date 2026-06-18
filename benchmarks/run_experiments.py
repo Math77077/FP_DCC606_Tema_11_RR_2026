@@ -1,4 +1,5 @@
 import os
+import csv
 import time
 import statistics
 from typing import List, Set, Tuple
@@ -6,7 +7,7 @@ from src.core.graph import Multigraph
 from src.core.models import TransitEdge
 from src.core.loaders import load_map_from_json
 from src.engines.parallel_dfs import find_alternative_paths, find_paths_parallel
-from benchmarks.generate_synthetic_data import generate_metropolitan_network, save_synthetic_dataset
+from benchmarks.generate_synthetic_data import save_synthetic_dataset
 
 class ExperimentRunner:
     """
@@ -29,7 +30,8 @@ class ExperimentRunner:
         end: str,
         max_time: float,
         max_transfers: int,
-        worker_counts: List[int]
+        worker_counts: List[int],
+        output_csv_path: str = "reports/metrics_scalability.csv"
     ):
         NUM_RUNS = 13
         print(f"\nRunning Sequential Baseline ({NUM_RUNS} iterations)...")
@@ -43,14 +45,31 @@ class ExperimentRunner:
             seq_times.append(t_end - t_start)
         
         t_1 = statistics.mean(seq_times)
+        total_routes = len(seq_solutions)
         print(f"Sequential Execution Mean (T_1): {t_1:.5f} seconds")
         print(f"Total valid alternative paths discovered: {len(seq_solutions)}")
 
         seq_fingerprint = cls.serialize_path_list(seq_solutions)
 
+        os.makedirs(os.path.dirname(output_csv_path), exist_ok=True)
+        csv_file_exists = os.path.exists(output_csv_path)
+
+        csv_rows = []
+
         print("\n" + "="*70)
         print(f"{'Workers (p)':<12}{'Mean Time (Tp)':<18}{'Speedup (Sp)':<16}{'Efficiency (Ep)':<14}")
         print("="*70)
+
+        if not csv_file_exists:
+            csv_rows.append({
+                "Nodes": len(graph.adjacency_list),
+                "Workers": 1,
+                "Mean_Time_Seconds": f"{t_1:.5f}",
+                "Speedup": "1.000",
+                "Efficiency": "100.00%",
+                "Routes_Extracted": total_routes,
+                "Status": "PASSED"
+            })
 
         for p in worker_counts:
             p_times = []
@@ -68,11 +87,32 @@ class ExperimentRunner:
             efficiency = speedup / p
 
             p_fingerprint = cls.serialize_path_list(p_solutions)
+            status_flag = "PASSED"
             if p_fingerprint != seq_fingerprint:
                 print(f"ERROR: Worker configuration p={p} produced incorrect solutions!")
+                status_flag = "FAILED"
             
             print(f"{p:<12}{t_p:<18.5f}{speedup:<16.3f}{efficiency:<14.3%}")
+
+            csv_rows.append({
+                "Nodes": len(graph.adjacency_list),
+                "Workers": p,
+                "Mean_Time_Seconds": f"{t_p:.5f}",
+                "Speedup": f"{speedup:.3f}",
+                "Efficiency": f"{efficiency:.3%}",
+                "Routes_Extracted": len(p_solutions),
+                "Status": status_flag
+            })
+
         print("="*70)
+
+        headers = ["Nodes", "Workers", "Mean_Time_Seconds", "Speedup", "Efficiency", "Routes_Extracted", "Status"]
+        
+        with open(output_csv_path, mode="a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=headers)
+            if not csv_file_exists:
+                writer.writeheader()  
+            writer.writerows(csv_rows)
 
 if __name__ == "__main__":
     TEST_SIZE = 1000
