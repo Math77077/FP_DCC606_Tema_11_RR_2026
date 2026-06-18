@@ -3,13 +3,9 @@ from typing import List
 from src.core.models import TransitEdge
 
 class ThreadSafeSolutionPool:
-    def __init__(self):
-        self._manager = Manager() # The manager will open the possibility of creating data structures that can be shared across completely separate CPU processes safely
-
-        self._shared_list = self._manager.list() # This is our list where all valid paths will accumulate
-
-        self._lock = self._manager.Lock() # This is the lock which enables just one worker writing at a time.
-        # So by doing that, we avoid overlapping information, overwritting or crashing the program
+    def __init__(self, shared_list, lock):
+        self._shared_list = shared_list
+        self._lock = lock
 
     def add_solution(self, path: List[TransitEdge]) -> None:
         """Safely appends a valid path to the global shared list."""
