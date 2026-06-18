@@ -1,9 +1,12 @@
+import os
 import time
 import statistics
 from typing import List, Set, Tuple
 from src.core.graph import Multigraph
 from src.core.models import TransitEdge
+from src.core.loaders import load_map_from_json
 from src.engines.parallel_dfs import find_alternative_paths, find_paths_parallel
+from benchmarks.generate_synthetic_data import generate_metropolitan_network, save_synthetic_dataset
 
 class ExperimentRunner:
     """
@@ -70,3 +73,32 @@ class ExperimentRunner:
             
             print(f"{p:<12}{t_p:<18.5f}{speedup:<16.3f}{efficiency:<14.3%}")
         print("="*70)
+
+if __name__ == "__main__":
+    TEST_SIZE = 1000
+    TARGET_JSON_PATH = f"data/synthetic/network_{TEST_SIZE}_nodes.json"
+    
+    if not os.path.exists(TARGET_JSON_PATH):
+        print(f"[TEST SETUP] Target dataset {TARGET_JSON_PATH} not found. Generating on the fly...")
+        save_synthetic_dataset([TEST_SIZE])
+        
+    print(f"[TEST SETUP] Loading multi-modal topology from {TARGET_JSON_PATH}...")
+    test_graph = load_map_from_json(TARGET_JSON_PATH)
+    
+    START_STATION = "Station_0"   
+    END_STATION = "Station_4"       
+    MAX_ALLOWABLE_TIME = 60.0       
+    MAX_ALLOWABLE_TRANSFERS = 4    
+    WORKER_CONFIGURATIONS = [2, 4, 8]
+    
+    print(f"[TEST EXECUTION] Initiating benchmarking routine from {START_STATION} to {END_STATION}...")
+    print(f"Constraints: Max Time = {MAX_ALLOWABLE_TIME}s, Max Transfers = {MAX_ALLOWABLE_TRANSFERS}")
+    
+    ExperimentRunner.run_benchmark(
+        graph=test_graph,
+        start=START_STATION,
+        end=END_STATION,
+        max_time=MAX_ALLOWABLE_TIME,
+        max_transfers=MAX_ALLOWABLE_TRANSFERS,
+        worker_counts=WORKER_CONFIGURATIONS
+    )
