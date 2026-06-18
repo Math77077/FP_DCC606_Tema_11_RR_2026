@@ -1,6 +1,8 @@
 import multiprocessing
 import queue
-from typing import List, Set, Tuple
+import time
+from typing import List, Set, Tuple, Dict
+from multiprocessing.sharedctypes import Synchronized
 from src.core.graph import Multigraph
 from src.core.models import TransitEdge
 from src.concurrency.thread_safe_pool import ThreadSafeSolutionPool
@@ -73,27 +75,57 @@ def parallel_worker_loop(
     end: str,
     max_time: float,
     max_transfers: int,
-    worker_queues,     # This is the dictionary containing all worker queues
-    solution_pool: ThreadSafeSolutionPool
+    signal_queues: Dict[int, any],
+    work_queues: Dict[int, any],     # This is the dictionary containing all worker queues
+    solution_pool: ThreadSafeSolutionPool,
+    active_workers: Synchronized
 ) -> None:
     # frame template: (current_node, accumulated_time, accumulated_transfers, path_list)
     local_stack: List[Tuple[str, float, int, List[TransitEdge]]] = []
 
     try: # grap initial task to start the worker's engine
-        boot_task = worker_queues[worker_id].get(timeout=0.1)
-        current_node, path, curr_time, curr_transfers = boot_task
+        boot_task = work_queues[worker_id].get(timeout=0.05)
+        current_node, curr_time, curr_transfers, path = boot_task
         local_stack.append((current_node, curr_time, curr_transfers, path))
     except queue.Empty: # in case of empty queue, we exit early
-        pass
+        with active_workers.get_lock():
+            active_workers.value -= 1
     
     while True:
         if not local_stack:
-            stolen_frame = WorkStealingManager.request_work(worker_id, num_workers, worker_queues)
+            with active_workers.get_lock():
+                if active_workers.value <= 0:
+                    break
+
+            with active_workers.get_lock():
+                active_workers.value -= 1
+
+            stolen_frame = None
+
+            for target_id in range(num_workers):
+                if target_id == worker_id:
+                    continue
+
+                try:
+                    signal_queues[target_id].put_nowait(worker_id)
+                    stolen_frame = work_queues[worker_id].get(timeout=0.02)
+                    if stolen_frame:
+                        break
+                except (queue.Empty, queue.Full):
+                    continue
 
             if stolen_frame:
+                with active_workers.get_lock():
+                    active_workers.value += 1
                 local_stack.append(stolen_frame)
+                continue
             else:
-                break
+                with active_workers.get_lock():
+                    if active_workers.value <= 0:
+                        break
+                        
+                time.sleep(0.002)
+                continue
 
         current_node, curr_time, curr_transfers, path = local_stack.pop()
 
@@ -102,15 +134,13 @@ def parallel_worker_loop(
             continue
 
         # checking if our own queue to verify if another worker pushed their ID inside it
-        if not worker_queues[worker_id].empty():
+        if not signal_queues[worker_id].empty():
             try:
-                thief_id = worker_queues[worker_id].get_nowait()
-                stolen_frame = WorkStealingManager.split_stack(local_stack)
+                thief_id = signal_queues[worker_id].get_nowait()
+                stolen_packet = WorkStealingManager.split_stack(local_stack)
 
-                if stolen_frame:
-                    worker_queues[thief_id].put_nowait(stolen_frame)
-                else:
-                    pass
+                if stolen_packet:
+                    work_queues[thief_id].put_nowait(stolen_packet)
             except (queue.Empty, queue.Full):
                 pass
 
@@ -144,11 +174,14 @@ def find_paths_parallel(
 ) -> List[List[TransitEdge]]:
     solution_pool = ThreadSafeSolutionPool() # This is the alternative 'all_valid_paths', but thread-safe
     
-    # isolated communication for each worker process
-    worker_queues = {i: multiprocessing.Queue() for i in range(num_workers)}
+    signal_queues = {i: multiprocessing.Queue() for i in range(num_workers)}
 
-    # task frame format: (current_node, path_list, accumulated_time, accumulated_transfers)
-    worker_queues[0].put((start, [], 0.0, 0))
+    work_queues = {i: multiprocessing.Queue() for i in range(num_workers)}
+
+    # tracker of active workers, at the start all of them are considered active
+    active_workers = multiprocessing.Value('i', num_workers)
+
+    work_queues[0].put((start, 0.0, 0, []))
 
     processes = []
 
@@ -163,8 +196,10 @@ def find_paths_parallel(
                 end,
                 max_time,
                 max_transfers,
-                worker_queues,
-                solution_pool
+                signal_queues,
+                work_queues,
+                solution_pool,
+                active_workers
             )
         )
         processes.append(p)
