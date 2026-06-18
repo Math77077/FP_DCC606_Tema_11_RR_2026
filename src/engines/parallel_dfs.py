@@ -172,7 +172,13 @@ def find_paths_parallel(
     max_transfers: int,
     num_workers: int    # How many threads/processes we will have
 ) -> List[List[TransitEdge]]:
-    solution_pool = ThreadSafeSolutionPool() # This is the alternative 'all_valid_paths', but thread-safe
+    manager = multiprocessing.Manager()
+    shared_list = manager.list()
+    lock = manager.Lock()
+    solution_pool = ThreadSafeSolutionPool(
+        shared_list,
+        lock
+    )
     
     signal_queues = {i: multiprocessing.Queue() for i in range(num_workers)}
 
