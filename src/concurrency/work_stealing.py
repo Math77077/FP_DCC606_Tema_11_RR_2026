@@ -9,12 +9,18 @@ class WorkStealingManager:
 
     @staticmethod
     def split_stack(local_stack: List[Tuple[str, float, int, List[TransitEdge]]]) -> Optional[Tuple[str, float, int, List[TransitEdge]]]:
-        if len(local_stack) > 1:
-            stolen_frame = local_stack.pop(0)
-            current_node, accumulated_time, accumulated_transfers, path_list = stolen_frame
-            isolated_path = list(path_list)
-            return (current_node, accumulated_time, accumulated_transfers, isolated_path)
-        return None
+        """
+        Extracts a coarse-grained task chunck from the bottom of the target's stack to minimize IPC overhead.
+        """
+        if len(local_stack) <= 1:
+            return None
+        
+        try:
+            stolen_item = local_stack.pop(0)
+            node, curr_time, curr_transfers, path_history = stolen_item
+            return (node, curr_time, curr_transfers, list(path_history))
+        except IndexError:
+            return None
     
     @staticmethod
     def request_work(
