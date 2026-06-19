@@ -115,7 +115,7 @@ class ExperimentRunner:
             writer.writerows(csv_rows)
 
 if __name__ == "__main__":
-    TEST_SIZE = 1000
+    TEST_SIZE = 100
     TARGET_JSON_PATH = f"data/synthetic/network_{TEST_SIZE}_nodes.json"
     
     if not os.path.exists(TARGET_JSON_PATH):
