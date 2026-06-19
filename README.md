@@ -110,8 +110,7 @@ python3 -m benchmarks.run_experiments
 
 2. **Sequential Baseline ($T_1$)**: Executes a single-threaded deterministic DFS search to capture baseline performance and establish a validation checksum fingerprint.
 3. **Parallel Iterations ($T_p$)**: Launches individual parallel engines across `[2, 4, 8]` worker process groups using full work-stealing protocols.
-4. 
-**Telemetry Export**: Computes algorithm verification checks, Speedup ($S_p$), and Efficiency ($E_p$) ratios across 13 test cycles, saving the metrics to `reports/metrics_scalability.csv`.
+4. **Telemetry Export**: Computes algorithm verification checks, Speedup ($S_p$), and Efficiency ($E_p$) ratios across 13 test cycles, saving the metrics to `reports/metrics_scalability.csv`.
 
 
 ---
